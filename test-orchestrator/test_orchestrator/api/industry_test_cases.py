@@ -33,14 +33,13 @@ import logging
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
-from test_orchestrator.auth import verify_auth
-import httpx
 
 from test_orchestrator import config
+from test_orchestrator.auth import verify_auth
 from test_orchestrator.request_handler import make_request
 from test_orchestrator.auth import get_dt_pull_service_headers
 from test_orchestrator.errors import Error, HTTPError
-from test_orchestrator.base_utils import get_dtr_access, fetch_submodel_info, submodel_schema_finder
+from test_orchestrator.base_utils import get_dtr_access, submodel_validation
 from test_orchestrator.validator import json_validator, schema_finder
 
 router = APIRouter()
@@ -209,97 +208,11 @@ async def submodel_test(counter_party_address: str,
             details='Please check https://eclipse-tractusx.github.io/docs-kits/kits/industry-core-kit/' + \
                     'software-development-view/digital-twins#edc-policies for troubleshooting.')
 
-    #Checking if shell_descriptors is not empty
-    if 'submodelDescriptors' not in shell_descriptors_spec:
-        raise HTTPError(
-            Error.NO_SHELLS_FOUND,
-            message="The DTR did not return at least one digital twin.",
-            details="Please check https://eclipse-tractusx.github.io/docs-kits/kits/digital-twin-kit/" +\
-                " software-development-view/#registering-a-new-twin for troubleshooting")
 
-    if len(shell_descriptors_spec['submodelDescriptors']) == 0:
-        raise HTTPError(
-            Error.NO_SHELLS_FOUND,
-            message="The DTR did not return at least one digital twin.",
-            details="Please check https://eclipse-tractusx.github.io/docs-kits/kits/digital-twin-kit/" +\
-                " software-development-view/#registering-a-new-twin for troubleshooting")
+    subm_validation_error = submodel_validation(counter_party_id,
+                                                shell_descriptors_spec,
+                                                semantic_id)
 
-    # Validating the smaller shell_descriptors output against a specific schema
-    # to ensure the data we are using is accurate
-    
-    try: 
-        shelldesc_schema = schema_finder('shell_descriptors_spec')
-        shelldesc_validation_error = json_validator(shelldesc_schema, shell_descriptors_spec)
-    except Exception:
-        raise HTTPError(
-                    Error.UNKNOWN_ERROR,
-                    message="An unknown error processing the shell descriptor occured.",
-                    details="Please contact the testbed administrator.")
-
-    if shelldesc_validation_error.get('status') == 'nok':
-        raise HTTPError(Error.UNPROCESSABLE_ENTITY,
-                message='Validation error',
-                details={'validation_errors': shelldesc_validation_error})
-
-    if shelldesc_validation_error.get('status') == 'ok':
-        # Look inside the shell_descriptors output and find the correct href link
-        submodels_list = shell_descriptors_spec['submodelDescriptors']
-
-        correct_element = [
-            item for item in submodels_list
-            if item['semanticId']['keys'][0]['value'] == semantic_id
-        ]
-
-        if not correct_element:
-            raise HTTPError(
-                Error.SUBMODEL_DESCRIPTOR_NOT_FOUND,
-                message=f'The submodel descriptor for semanticID {semantic_id} could not be found in the DTR. ' +\
-                        'Make sure the submodel is registered accordingly and visible for the testbed BPNL',
-                details='Please check https://eclipse-tractusx.github.io/docs-kits/kits/industry-core-kit/' + \
-                        'software-development-view/digital-twins#edc-policies for troubleshooting.')
-
-        submodel_info = fetch_submodel_info(correct_element, semantic_id)
-
-        # Gain access to the submodel link
-        (dtr_url_subm, dtr_key_subm, policy_validation_outcome_not_used) = await get_dtr_access(
-            counter_party_address=submodel_info['subm_counterparty'],
-            counter_party_id=counter_party_id,
-            operand_left=submodel_info['subm_operandleft'],
-            operand_right=submodel_info['subm_operandright'],
-            policy_validation=False
-            )
-
-        # Run the submodels request pointed at the href link. To comply with industry core standards, the testbed appends $value.
-        response = httpx.get(submodel_info['href']+'/$value', headers={'Authorization': dtr_key_subm})
-
-        if response.status_code != 200:
-            raise HTTPError(Error.UNPROCESSABLE_ENTITY,
-                            message=f'Make sure your dataplane can resolve the request and that the href above ' +\
-                                    'is according to the industry core specification, ending in /submodel.',
-                            details=f'Failed to obtain the required submodel data for({submodel_info['href']}).')
-
-        try:
-            submodels = response.json()
-        except Exception:
-            raise HTTPError(
-                Error.UNPROCESSABLE_ENTITY,
-                message='The submodel response is not a valid json',
-                details=f'Response: {response}')
-
-        # Find the right schema and validate the submodels against it
-        try:
-            subm_schema_dict = submodel_schema_finder(semantic_id)
-            subm_schema = subm_schema_dict['schema']
-        except Exception:
-            raise HTTPError(
-                Error.SUBMODEL_VALIDATION_FAILED,
-                message=f'The validation of the requested submodel for semanticID {semantic_id} failed: ' + \
-                        'Could not find the submodel schema based on the semantic_id provided.',
-                details='Please check https://eclipse-tractusx.github.io/docs-kits/kits/industry-core-kit/' + \
-                        'software-development-view/aspect-models for troubleshooting and samples.')
-
-        subm_validation_error = json_validator(subm_schema, submodels)
-
-        return {'message': 'Submodel validation completed.',
-                'submodel_validation_message': subm_validation_error,
-                'policy_validation_message': policy_validation_outcome}
+    return {'message': 'Submodel validation completed.',
+            'submodel_validation_message': subm_validation_error,
+            'policy_validation_message': policy_validation_outcome}
