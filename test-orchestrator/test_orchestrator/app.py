@@ -35,6 +35,7 @@ from test_orchestrator.api import (
     industry_test_cases,
     special_characteristics
 )
+from test_orchestrator.cache import create_cache_provider
 from test_orchestrator.errors import (
     HTTPError,
     http_error_handler,
@@ -106,5 +107,9 @@ def create_app():
                        tags=['Special Characteristics Tests'])
 
     app.get('/_/health', status_code=200)(health)
+
+    @app.on_event("startup")
+    async def startup():
+        app.state.cache_provider = create_cache_provider()
 
     return app
