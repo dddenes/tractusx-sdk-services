@@ -21,15 +21,31 @@
 # *************************************************************
 
 """
-Endpoints to run special characteristics tests.
+FastAPI router providing endpoints for notification validation and data transfer orchestration.
+
+Endpoints
+----------
+1. **POST /notification-validation/**
+   Validates the structure and content of a Catena-X notification payload.
+   Returns `{ "status": "ok" }` on success or raises `HTTPError` if invalid.
+
+2. **POST /data-transfer/**
+   Validates the payload, resolves the partner EDC endpoint, queries the partner DTR
+   to check for the presence of the Digital Twin (DT) matching the notification’s Catena-X ID.
+   Returns DTR data if found or raises `HTTPError` otherwise.
+
+Both endpoints are protected by authentication (`verify_auth`).
 """
 
 import logging
 from typing import Dict
-
 from fastapi import APIRouter, Depends
 
 from test_orchestrator.auth import verify_auth
+from test_orchestrator.utils.special_characteristics import (
+    validate_notification_payload,
+    process_notification_and_retrieve_dtr
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,5 +56,27 @@ logger = logging.getLogger(__name__)
              dependencies=[Depends(verify_auth)])
 async def notification_validation(payload: Dict,
                                   timeout: int = 80):
+    """
+    Endpoint to validate a notification payload.
+    """
+    return validate_notification_payload(payload)
 
-    return {}
+
+@router.post('/data-transfer/',
+            response_model=Dict,
+            dependencies=[Depends(verify_auth)])
+async def data_transfer(payload: Dict,
+                        counter_party_address: str,
+                        counter_party_id: str,
+                        timeout: int = 80,
+                        max_events: int = 2):
+    """
+    Orchestrates data transfer validation and Digital Twin verification.
+    """
+    validate_notification_payload(payload)
+
+    return await process_notification_and_retrieve_dtr(payload=payload,
+                                                       counter_party_address=counter_party_address,
+                                                       counter_party_id=counter_party_id,
+                                                       timeout=timeout,
+                                                       max_events=max_events)
